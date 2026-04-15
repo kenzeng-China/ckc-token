@@ -2,6 +2,7 @@
   "name": "ckc-token-fetch-example",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "Example of using ckc-token with raw fetch API",
   "scripts": {
     "start": "tsx src/basic/example.ts"

@@ -28,7 +28,7 @@ curl -sS "${CKC_TOKEN_API_URL}" \
   -d '{
     "model": "gpt-5.2",
     "input": "Hello, what can you do?"
-  }' | jq .
+  }' | { command -v jq >/dev/null 2>&1 && jq . || cat; }
 
 echo ""
-echo "Tip: Remove '| jq .' to see raw JSON output."
+echo "Tip: Install jq (brew install jq) for pretty-printed output."
