@@ -1,0 +1,14 @@
+{
+  "name": "ckc-token-fetch-example",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Example of using ckc-token with raw fetch API",
+  "scripts": {
+    "start": "tsx src/basic/example.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}
