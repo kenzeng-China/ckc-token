@@ -1,0 +1,1199 @@
+# CKCloud x402 充值 API 文档
+
+本文档描述了如何使用 **x402 协议**为 CKCloud 账户进行充值。x402 是一种基于 HTTP 402 状态码的支付协议，允许用户通过加密货币（USDC）直接为账户充值。
+
+---
+
+## 目录
+
+1. [概述](#概述)
+2. [快速开始](#快速开始)
+3. [核心概念](#核心概念)
+4. [自定义充值金额](#自定义充值金额)
+5. [API 接口详情](#api-接口详情)
+6. [完整示例代码](#完整示例代码)
+7. [常见问题](#常见问题)
+
+---
+
+## 概述
+
+### 什么是 x402？
+
+**x402** 是一种开放支付协议，它将 HTTP 402 Payment Required 状态码标准化，使得 API 服务可以通过加密货币进行收费。
+
+### 核心优势
+
+| 特性 | 说明 |
+|------|------|
+| **无需注册** | 只需钱包地址即可支付 |
+| **即时到账** | 链上确认后立即生效 |
+| **透明定价** | 支付金额在交易前明确显示 |
+| **多链支持** | 支持 EVM（Base 主网/测试网）和 SVM（Solana 主网/测试网） |
+
+### 支持的网络
+
+| 网络 | Network ID | Chain ID | 说明 |
+|------|------------|----------|------|
+| Base Mainnet | `eip155:8453` | 8453 | EVM 主网，**推荐** |
+| Base Sepolia | `eip155:84532` | 84532 | EVM 测试网 |
+| Solana Mainnet | `solana:mainnet` | - | SVM 主网 |
+| Solana Devnet | `solana:devnet` | - | SVM 测试网 |
+
+---
+
+## 快速开始
+
+### 安装依赖
+
+```bash
+# 使用 npm
+npm install @x402/fetch @x402/core @x402/evm viem
+
+# Solana 支持（可选）
+npm install @x402/svm @solana/kit @scure/base
+
+# 或使用 yarn
+yarn add @x402/fetch @x402/core @x402/evm viem
+```
+
+### 最简示例（固定金额充值）
+
+使用 x402 SDK 自动处理整个支付流程：
+
+```javascript
+import { wrapFetchWithPayment, x402Client } from '@x402/fetch';
+import { ExactEvmScheme } from '@x402/evm/exact/client';
+import { createWalletClient, custom } from 'viem';
+
+// 1. 连接钱包
+const walletClient = createWalletClient({
+    transport: custom(window.ethereum)
+});
+const [address] = await walletClient.requestAddresses();
+
+// 2. 创建签名器
+const signer = {
+    address,
+    signTypedData: async (params) => walletClient.signTypedData({
+        account: address,
+        ...params
+    })
+};
+
+// 3. 初始化 x402 客户端
+const client = new x402Client()
+    .register('eip155:*', new ExactEvmScheme(signer));
+
+// 4. 包装 fetch 并发起请求
+const paidFetch = wrapFetchWithPayment(fetch, client);
+const response = await paidFetch('https://t.ckcloudai.com/x402/v1/top-up', {
+    method: 'POST'
+});
+
+const { Amount, Balance } = await response.json();
+console.log(`充值成功！金额: $${Amount}, 余额: $${Balance}`);
+```
+
+---
+
+## 核心概念
+
+### HTTP 402 支付流程
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      x402 支付流程                                   │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  客户端                              服务端                           │
+│    │                                  │                             │
+│    │  1. 发起请求（无支付头）            │                             │
+│    │ ───────────────────────────────> │                             │
+│    │                                  │                             │
+│    │  2. 返回 402 + PAYMENT-REQUIRED  │                              │
+│    │ <─────────────────────────────── │                             │
+│    │   （包含：金额、收款地址、网络等）    │                             │
+│    │                                  │                             │
+│    │  3. 创建支付载荷并签名              │                             │
+│    │     编码为 PAYMENT-SIGNATURE      │                             │
+│    │                                  │                             │
+│    │  4. 重新发起请求（带支付头）         │                             │
+│    │ ───────────────────────────────> │                             │
+│    │                                  │                             │
+│    │                          5. 验证签名并结算                       │
+│    │                                  │                             │
+│    │  6. 返回 200 + 业务响应            │                             │
+│    │ <─────────────────────────────── │                             │
+│    │                                  │                             │
+│    └────────────────────────────────────────────────────────────────┘
+```
+
+### 关键数据结构
+
+#### PaymentRequired（服务端 402 响应）
+
+```typescript
+interface PaymentRequired {
+    x402Version: number;           // 协议版本，通常为 2
+    resource: { url: string };     // 请求的资源 URL
+    accepts: PaymentRequirements[]; // 可接受的支付选项
+    extensions?: Record<string, unknown>;
+}
+
+interface PaymentRequirements {
+    scheme: string;      // 支付方案，如 "exact"
+    network: string;     // 网络，如 "eip155:8453"
+    amount: string;      // 金额（µUSD），如 "1000000" = $1.00
+    asset: string;       // USDC 合约地址
+    payTo: string;       // 收款地址
+    maxTimeoutSeconds: number;
+    extra: Record<string, unknown>;
+}
+```
+
+#### PaymentPayload（客户端支付签名）
+
+```typescript
+interface PaymentPayload {
+    x402Version: number;
+    resource: { url: string };
+    accepted: PaymentRequirements;  // 选中的支付选项
+    payload: Record<string, unknown>; // 签名后的交易数据
+    extensions?: Record<string, unknown>;
+}
+```
+
+### 金额单位说明
+
+| 单位 | 值 | 说明 |
+|------|-----|------|
+| 美元 | $1.00 | 用户视角 |
+| 微美元 (µUSD) | 1,000,000 | API 参数 `amount` |
+| USDC 最小单位 | 1,000,000 | 链上转账（6 位小数） |
+
+**换算示例**：
+- 充值 $1.00 → `amount: "1000000"`
+- 充值 $5.00 → `amount: "5000000"`
+- 充值 $10.00 → `amount: "10000000"`
+
+---
+
+## 自定义充值金额
+
+CKCloud 充值接口支持**自定义充值金额**。这是通过 x402 的 **Policy（策略）** 机制实现的。
+
+### 方式一：使用 registerPolicy（推荐）
+
+`registerPolicy` 允许在支付创建前修改 `PaymentRequirements`，包括金额：
+
+```javascript
+import { x402Client } from '@x402/core/client';
+import { ExactEvmScheme } from '@x402/evm/exact/client';
+
+// 自定义充值金额（美元）
+const topUpAmountUsd = 10.00;
+const topUpAmountMicroUsd = Math.floor(topUpAmountUsd * 1_000_000).toString();
+
+const client = new x402Client()
+    // 注册策略：修改支付金额
+    .registerPolicy((version, requirements) => {
+        return requirements.map(req => ({
+            ...req,
+            amount: topUpAmountMicroUsd  // 自定义金额
+        }));
+    })
+    .register('eip155:*', new ExactEvmScheme(signer));
+```
+
+### 方式二：手动构建支付载荷
+
+完全控制支付流程，适合需要复杂自定义的场景：
+
+```javascript
+import { x402Client } from '@x402/core/client';
+import { ExactEvmScheme } from '@x402/evm/exact/client';
+import { 
+    decodePaymentRequiredHeader,
+    encodePaymentSignatureHeader 
+} from '@x402/core/http';
+
+async function topUpWithCustomAmount(amountUsd) {
+    const amountMicroUsd = Math.floor(amountUsd * 1_000_000).toString();
+    
+    // 1. 发起请求，获取 402 响应
+    let response = await fetch('https://t.ckcloudai.com/x402/v1/top-up', {
+        method: 'POST'
+    });
+    
+    if (response.status !== 402) {
+        throw new Error(`Expected 402, got ${response.status}`);
+    }
+    
+    // 2. 解析 Payment-Required 头
+    const paymentRequiredHeader = response.headers.get('PAYMENT-REQUIRED');
+    const paymentRequired = decodePaymentRequiredHeader(paymentRequiredHeader);
+    
+    // 3. 修改金额
+    paymentRequired.accepts = paymentRequired.accepts.map(req => ({
+        ...req,
+        amount: amountMicroUsd  // 自定义金额
+    }));
+    
+    // 4. 创建支付载荷
+    const client = new x402Client()
+        .register('eip155:*', new ExactEvmScheme(signer));
+    
+    const paymentPayload = await client.createPaymentPayload(paymentRequired);
+    
+    // 5. 编码并发送请求
+    const paymentSignature = encodePaymentSignatureHeader(paymentPayload);
+    
+    response = await fetch('https://t.ckcloudai.com/x402/v1/top-up', {
+        method: 'POST',
+        headers: {
+            'PAYMENT-SIGNATURE': paymentSignature
+        }
+    });
+    
+    return response.json();
+}
+
+// 使用示例
+const result = await topUpWithCustomAmount(10.00);
+console.log(`充值成功！余额: $${result.Balance}`);
+```
+
+### 方式三：使用生命周期钩子
+
+使用钩子进行日志记录、监控或自定义验证：
+
+```javascript
+const client = new x402Client()
+    .register('eip155:*', new ExactEvmScheme(signer))
+    
+    // 支付创建前
+    .onBeforePaymentCreation(async (context) => {
+        console.log('即将创建支付:', {
+            network: context.selectedRequirements.network,
+            amount: context.selectedRequirements.amount
+        });
+        
+        // 可以中止支付
+        // return { abort: true, reason: '金额超出限制' };
+    })
+    
+    // 支付创建后
+    .onAfterPaymentCreation(async (context) => {
+        console.log('支付载荷已创建:', context.paymentPayload);
+        // 可以记录到数据库或发送监控数据
+    })
+    
+    // 支付创建失败时
+    .onPaymentCreationFailure(async (context) => {
+        console.error('支付创建失败:', context.error);
+        // 可以尝试恢复
+        // return { recovered: true, payload: alternativePayload };
+    });
+```
+
+### 方式四：硬编码配置（零额外请求）⭐ 推荐
+
+如果服务端提供以下配置信息，前端可以**跳过第一次 402 请求**，直接构建支付载荷：
+
+```javascript
+import { x402Client } from '@x402/core/client';
+import { ExactEvmScheme } from '@x402/evm/exact/client';
+import { encodePaymentSignatureHeader } from '@x402/core/http';
+
+// ==================== 硬编码配置（由后端提供）====================
+const HARDCODED_CONFIG = {
+    // Base 主网配置
+    evm: {
+        network: 'eip155:8453',
+        payTo: '0x...',           // 收款地址（后端提供）
+        asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // Base USDC
+        // extra 用于 EIP-712 签名，必须包含 USDC 的 name 和 version
+        extra: {
+            name: 'USD Coin',
+            version: '2',
+            decimals: 6,
+        }
+    },
+    // Solana 主网配置
+    svm: {
+        network: 'solana:mainnet',
+        payTo: '...',             // 收款地址（后端提供）
+        asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // Solana USDC
+        extra: {}
+    }
+};
+
+const BASE_URL = 'https://t.ckcloudai.com';
+// ================================================================
+
+async function topUpWithHardcodedConfig(amountUsd, useSolana = false) {
+    const amountMicroUsd = Math.floor(amountUsd * 1_000_000).toString();
+    const config = useSolana ? HARDCODED_CONFIG.svm : HARDCODED_CONFIG.evm;
+    
+    // 1. 直接构建 PaymentRequired（无需请求后端）
+    const paymentRequired = {
+        x402Version: 2,
+        resource: { url: `${BASE_URL}/x402/v1/top-up` },
+        accepts: [{
+            scheme: 'exact',
+            network: config.network,
+            amount: amountMicroUsd,
+            asset: config.asset,
+            payTo: config.payTo,
+            maxTimeoutSeconds: 3600,
+            extra: config.extra
+        }]
+    };
+    
+    // 2. 创建支付载荷
+    const client = new x402Client()
+        .register('eip155:*', new ExactEvmScheme(signer));  // 或 ExactSvmScheme
+    
+    const paymentPayload = await client.createPaymentPayload(paymentRequired);
+    
+    // 3. 发送请求（仅一次！）
+    const response = await fetch(`${BASE_URL}/x402/v1/top-up`, {
+        method: 'POST',
+        headers: {
+            'PAYMENT-SIGNATURE': encodePaymentSignatureHeader(paymentPayload)
+        }
+    });
+    
+    return response.json();
+}
+
+// 使用示例
+const result = await topUpWithHardcodedConfig(10.00);
+console.log(`充值成功！余额: $${result.Balance}`);
+```
+
+#### 硬编码配置清单
+
+前端需要从后端获取以下信息：
+
+| 字段 | 说明 | Base Mainnet 示例 |
+|------|------|------------------|
+| `payTo` | 收款地址 | `0x...`（由后端提供）|
+| `asset` | USDC 合约地址 | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
+| `network` | 网络 ID | `eip155:8453` |
+| `extra.name` | 代币名称（EIP-712 用）| `USD Coin` |
+| `extra.version` | 代币版本（EIP-712 用）| `2` |
+| `extra.decimals` | 代币精度 | `6` |
+
+#### 各网络 USDC 合约地址
+
+| 网络 | USDC 地址 |
+|------|----------|
+| Base Mainnet | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
+| Base Sepolia | `0x036Cb5D2762C40e05DCC0B7387a64f60E20C1E3f` |
+| Solana Mainnet | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` |
+| Solana Devnet | `4zMMC9srt5Rq5tHJQ6JZ5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5Z5` |
+
+---
+
+## API 接口详情
+
+### 充值接口
+
+| 项目 | 值 |
+|-----|-----|
+| **URL** | `/x402/v1/top-up` |
+| **Method** | `POST` |
+| **认证** | x402 支付 |
+
+### 请求头
+
+| 参数名 | 类型 | 必填 | 说明 |
+|-------|------|------|------|
+| `PAYMENT-SIGNATURE` | string | 是 | Base64 编码的支付载荷 |
+
+### 响应参数
+
+**成功响应 (HTTP 200)**:
+
+```json
+{
+    "Pubkey": "0x774b3f6C5a6F8e2D9A1B3C4d5E6f7A8b9C0D1e2F",
+    "Amount": 10.0,
+    "Balance": 25.5
+}
+```
+
+| 参数名 | 类型 | 说明 |
+|-------|------|------|
+| `Pubkey` | string | 用户钱包地址 |
+| `Amount` | float | 本次充值金额（美元） |
+| `Balance` | float | 充值后账户余额（美元） |
+
+**错误响应**:
+
+| HTTP 状态码 | 说明 |
+|------------|------|
+| 400 | 支付签名格式错误或验证失败 |
+| 402 | 需要支付（缺少 PAYMENT-SIGNATURE 头） |
+| 500 | 支付处理失败 |
+
+---
+
+## 完整示例代码
+
+### 示例一：完整 HTML 页面（推荐）
+
+可直接复制保存为 HTML 文件在浏览器中运行：
+
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CKCloud x402 充值</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 480px; 
+            margin: 0 auto; 
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .card { 
+            background: white; 
+            border-radius: 16px; 
+            padding: 24px; 
+            margin: 16px 0;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+        h1 { color: #1a1a2e; margin: 0 0 8px 0; font-size: 24px; }
+        h3 { color: #4a4a6a; margin: 0 0 12px 0; font-size: 16px; }
+        .subtitle { color: #888; font-size: 14px; margin-bottom: 20px; }
+        button { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; 
+            border: none; 
+            padding: 14px 28px; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            font-size: 16px;
+            font-weight: 600;
+            width: 100%;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        button:hover:not(:disabled) { 
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        button:disabled { 
+            background: #ccc; 
+            cursor: not-allowed;
+            transform: none;
+        }
+        .amount-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .amount-btn {
+            background: #f0f0f5;
+            color: #4a4a6a;
+            padding: 12px;
+            border-radius: 8px;
+            font-weight: 600;
+            width: 100%;
+        }
+        .amount-btn.selected {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .amount-btn.popular {
+            position: relative;
+        }
+        .amount-btn.popular::after {
+            content: '热门';
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            background: #ff6b6b;
+            color: white;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        input { 
+            width: 100%;
+            padding: 12px; 
+            border: 2px solid #e0e0e5; 
+            border-radius: 8px; 
+            font-size: 16px;
+            transition: border-color 0.2s;
+        }
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .log { 
+            background: #1e1e2e; 
+            color: #0f0; 
+            padding: 16px; 
+            border-radius: 8px; 
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 12px; 
+            white-space: pre-wrap; 
+            max-height: 200px; 
+            overflow-y: auto;
+            line-height: 1.5;
+        }
+        .status { 
+            padding: 12px 16px; 
+            border-radius: 8px; 
+            margin: 12px 0;
+            font-weight: 500;
+        }
+        .status.success { background: #d4edda; color: #155724; }
+        .status.error { background: #f8d7da; color: #721c24; }
+        .status.waiting { background: #fff3cd; color: #856404; }
+        .wallet-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px;
+            background: #f0f0f5;
+            border-radius: 8px;
+            margin-bottom: 12px;
+        }
+        .wallet-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #28a745;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>💰 CKCloud 充值</h1>
+        <p class="subtitle">使用 USDC 为账户充值</p>
+    </div>
+    
+    <div class="card">
+        <h3>步骤 1: 连接钱包</h3>
+        <button onclick="connectWallet()" id="connectBtn">连接 MetaMask</button>
+        <div id="walletInfo" class="wallet-info" style="display: none;">
+            <div class="wallet-dot"></div>
+            <span id="walletAddress"></span>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h3>步骤 2: 选择充值金额</h3>
+        <div class="amount-grid" id="amountGrid">
+            <button class="amount-btn" data-amount="1">$1</button>
+            <button class="amount-btn popular selected" data-amount="5">$5</button>
+            <button class="amount-btn" data-amount="10">$10</button>
+            <button class="amount-btn" data-amount="25">$25</button>
+            <button class="amount-btn" data-amount="50">$50</button>
+            <button class="amount-btn" data-amount="100">$100</button>
+        </div>
+        <input type="number" id="customAmount" placeholder="或输入自定义金额（美元）" step="0.01" min="0.01">
+    </div>
+    
+    <div class="card">
+        <h3>步骤 3: 确认充值</h3>
+        <button onclick="topUp()" id="topUpBtn" disabled>确认充值</button>
+        <div id="status" style="display: none;"></div>
+    </div>
+    
+    <div class="card">
+        <h3>日志</h3>
+        <div id="log" class="log">等待操作...</div>
+    </div>
+
+    <script type="module">
+        import { wrapFetchWithPayment, x402Client } from 'https://esm.sh/@x402/fetch@0.3.9';
+        import { ExactEvmScheme } from 'https://esm.sh/@x402/evm@0.3.9/exact/client';
+        import { createWalletClient, custom } from 'https://esm.sh/viem@2.21.55';
+        
+        // 配置
+        const BASE_URL = 'https://t.ckcloudai.com';
+        const CHAIN_ID = 8453; // Base 主网
+        
+        // 状态
+        let walletClient = null;
+        let userAddress = null;
+        let x402ClientInstance = null;
+        let selectedAmount = 5;
+        
+        // 工具函数
+        function log(msg, type = 'info') {
+            const logEl = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            const icon = type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️';
+            logEl.textContent += `[${time}] ${icon} ${msg}\n`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+        
+        function setStatus(msg, type = 'waiting') {
+            const el = document.getElementById('status');
+            el.textContent = msg;
+            el.className = 'status ' + type;
+            el.style.display = 'block';
+        }
+        
+        // 金额选择
+        document.getElementById('amountGrid').addEventListener('click', (e) => {
+            const btn = e.target.closest('.amount-btn');
+            if (!btn) return;
+            
+            document.querySelectorAll('.amount-btn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            selectedAmount = parseFloat(btn.dataset.amount);
+            document.getElementById('customAmount').value = '';
+            log(`选择充值金额: $${selectedAmount}`);
+        });
+        
+        document.getElementById('customAmount').addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            if (val > 0) {
+                selectedAmount = val;
+                document.querySelectorAll('.amount-btn').forEach(b => b.classList.remove('selected'));
+                log(`自定义充值金额: $${selectedAmount.toFixed(2)}`);
+            }
+        });
+        
+        // 连接钱包
+        window.connectWallet = async function() {
+            if (!window.ethereum) {
+                setStatus('请先安装 MetaMask！', 'error');
+                log('未检测到 MetaMask', 'error');
+                return;
+            }
+            
+            try {
+                log('正在连接钱包...');
+                document.getElementById('connectBtn').disabled = true;
+                
+                walletClient = createWalletClient({
+                    transport: custom(window.ethereum)
+                });
+                
+                const addresses = await walletClient.requestAddresses();
+                userAddress = addresses[0];
+                
+                log(`钱包已连接: ${userAddress.slice(0,6)}...${userAddress.slice(-4)}`, 'success');
+                document.getElementById('walletInfo').style.display = 'flex';
+                document.getElementById('walletAddress').textContent = 
+                    `${userAddress.slice(0,6)}...${userAddress.slice(-4)}`;
+                
+                // 切换到 Base 主网
+                log('切换到 Base 主网...');
+                try {
+                    await walletClient.switchChain({ id: CHAIN_ID });
+                } catch (err) {
+                    if (err.code === 4902) {
+                        await walletClient.addChain({
+                            chain: {
+                                id: CHAIN_ID,
+                                name: 'Base',
+                                nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+                                rpcUrls: { default: ['https://mainnet.base.org'] },
+                                blockExplorers: { default: { name: 'Basescan', url: 'https://basescan.org' } }
+                            }
+                        });
+                    }
+                }
+                log('已切换到 Base 主网', 'success');
+                
+                // 创建签名器
+                const signer = {
+                    address: userAddress,
+                    signTypedData: async (params) => {
+                        log('请在钱包中确认签名...');
+                        return walletClient.signTypedData({
+                            account: userAddress,
+                            ...params
+                        });
+                    }
+                };
+                
+                // 初始化 x402 客户端（使用策略设置自定义金额）
+                x402ClientInstance = new x402Client()
+                    .register('eip155:*', new ExactEvmScheme(signer));
+                
+                document.getElementById('topUpBtn').disabled = false;
+                setStatus('钱包已就绪，可以开始充值', 'success');
+                
+            } catch (error) {
+                log(`连接失败: ${error.message}`, 'error');
+                setStatus('连接失败: ' + error.message, 'error');
+                document.getElementById('connectBtn').disabled = false;
+            }
+        };
+        
+        // 执行充值
+        window.topUp = async function() {
+            const amountUsd = parseFloat(document.getElementById('customAmount').value) || selectedAmount;
+            
+            if (!amountUsd || amountUsd <= 0) {
+                setStatus('请输入有效的充值金额', 'error');
+                return;
+            }
+            
+            const amountMicroUsd = Math.floor(amountUsd * 1_000_000).toString();
+            
+            try {
+                setStatus(`正在充值 $${amountUsd.toFixed(2)}...`, 'waiting');
+                log(`开始充值 $${amountUsd.toFixed(2)} (${amountMicroUsd} µUSD)`);
+                document.getElementById('topUpBtn').disabled = true;
+                
+                // 使用策略修改金额
+                const clientWithAmount = new x402Client()
+                    .registerPolicy((version, reqs) => 
+                        reqs.map(req => ({ ...req, amount: amountMicroUsd }))
+                    )
+                    .register('eip155:*', x402ClientInstance.registeredClientSchemes);
+                
+                // 手动构建（因为需要自定义金额）
+                let response = await fetch(`${BASE_URL}/x402/v1/top-up`, { method: 'POST' });
+                
+                if (response.status === 402) {
+                    const { decodePaymentRequiredHeader, encodePaymentSignatureHeader } = 
+                        await import('https://esm.sh/@x402/core@0.3.9/http');
+                    
+                    const paymentRequired = decodePaymentRequiredHeader(
+                        response.headers.get('PAYMENT-REQUIRED')
+                    );
+                    
+                    // 修改金额
+                    paymentRequired.accepts = paymentRequired.accepts.map(req => ({
+                        ...req,
+                        amount: amountMicroUsd
+                    }));
+                    
+                    log('创建支付载荷...');
+                    
+                    // 获取签名器
+                    const signer = {
+                        address: userAddress,
+                        signTypedData: async (params) => walletClient.signTypedData({
+                            account: userAddress,
+                            ...params
+                        })
+                    };
+                    
+                    const client = new x402Client()
+                        .register('eip155:*', new ExactEvmScheme(signer));
+                    
+                    const paymentPayload = await client.createPaymentPayload(paymentRequired);
+                    const paymentSignature = encodePaymentSignatureHeader(paymentPayload);
+                    
+                    log('发送支付请求...');
+                    response = await fetch(`${BASE_URL}/x402/v1/top-up`, {
+                        method: 'POST',
+                        headers: { 'PAYMENT-SIGNATURE': paymentSignature }
+                    });
+                }
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    log(`充值成功！`, 'success');
+                    log(`金额: $${data.Amount.toFixed(2)}`);
+                    log(`新余额: $${data.Balance.toFixed(2)}`);
+                    setStatus(`充值成功！新余额: $${data.Balance.toFixed(2)}`, 'success');
+                } else {
+                    throw new Error(data.message || '充值失败');
+                }
+                
+            } catch (error) {
+                log(`充值失败: ${error.message}`, 'error');
+                setStatus('充值失败: ' + error.message, 'error');
+            } finally {
+                document.getElementById('topUpBtn').disabled = false;
+            }
+        };
+    </script>
+</body>
+</html>
+```
+
+### 示例二：React 组件
+
+```jsx
+import React, { useState } from 'react';
+import { wrapFetchWithPayment, x402Client } from '@x402/fetch';
+import { ExactEvmScheme } from '@x402/evm/exact/client';
+import { createWalletClient, custom } from 'viem';
+import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from '@x402/core/http';
+
+const BASE_URL = 'https://t.ckcloudai.com';
+const CHAIN_ID = 8453;
+
+const AMOUNT_OPTIONS = [1, 5, 10, 25, 50, 100];
+
+function TopUpComponent() {
+    const [walletAddress, setWalletAddress] = useState(null);
+    const [selectedAmount, setSelectedAmount] = useState(5);
+    const [loading, setLoading] = useState(false);
+    const [balance, setBalance] = useState(null);
+    const [error, setError] = useState(null);
+    
+    const connectWallet = async () => {
+        if (!window.ethereum) {
+            setError('请安装 MetaMask');
+            return;
+        }
+        
+        try {
+            const walletClient = createWalletClient({
+                transport: custom(window.ethereum)
+            });
+            
+            const [address] = await walletClient.requestAddresses();
+            
+            try {
+                await walletClient.switchChain({ id: CHAIN_ID });
+            } catch (err) {
+                if (err.code === 4902) {
+                    await walletClient.addChain({
+                        chain: {
+                            id: CHAIN_ID,
+                            name: 'Base',
+                            nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+                            rpcUrls: { default: ['https://mainnet.base.org'] },
+                        }
+                    });
+                }
+            }
+            
+            setWalletAddress({ address, walletClient });
+            setError(null);
+        } catch (err) {
+            setError(err.message);
+        }
+    };
+    
+    const handleTopUp = async () => {
+        if (!walletAddress) return;
+        
+        setLoading(true);
+        setError(null);
+        
+        const amountMicroUsd = Math.floor(selectedAmount * 1_000_000).toString();
+        
+        try {
+            const { address, walletClient } = walletAddress;
+            
+            const signer = {
+                address,
+                signTypedData: async (params) => walletClient.signTypedData({
+                    account: address,
+                    ...params
+                })
+            };
+            
+            let response = await fetch(`${BASE_URL}/x402/v1/top-up`, { method: 'POST' });
+            
+            if (response.status === 402) {
+                const paymentRequired = decodePaymentRequiredHeader(
+                    response.headers.get('PAYMENT-REQUIRED')
+                );
+                
+                paymentRequired.accepts = paymentRequired.accepts.map(req => ({
+                    ...req,
+                    amount: amountMicroUsd
+                }));
+                
+                const client = new x402Client()
+                    .register('eip155:*', new ExactEvmScheme(signer));
+                
+                const paymentPayload = await client.createPaymentPayload(paymentRequired);
+                
+                response = await fetch(`${BASE_URL}/x402/v1/top-up`, {
+                    method: 'POST',
+                    headers: {
+                        'PAYMENT-SIGNATURE': encodePaymentSignatureHeader(paymentPayload)
+                    }
+                });
+            }
+            
+            const data = await response.json();
+            
+            if (response.ok) {
+                setBalance(data.Balance);
+            } else {
+                throw new Error(data.message);
+            }
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+    
+    if (!walletAddress) {
+        return (
+            <div className="card">
+                <button onClick={connectWallet} className="btn-primary">
+                    连接 MetaMask
+                </button>
+                {error && <p className="error">{error}</p>}
+            </div>
+        );
+    }
+    
+    return (
+        <div className="card">
+            <p className="wallet">
+                {walletAddress.address.slice(0,6)}...{walletAddress.address.slice(-4)}
+            </p>
+            
+            <div className="amount-grid">
+                {AMOUNT_OPTIONS.map(amount => (
+                    <button
+                        key={amount}
+                        className={`amount-btn ${selectedAmount === amount ? 'selected' : ''}`}
+                        onClick={() => setSelectedAmount(amount)}
+                    >
+                        ${amount}
+                    </button>
+                ))}
+            </div>
+            
+            <button
+                onClick={handleTopUp}
+                disabled={loading}
+                className="btn-primary"
+            >
+                {loading ? '处理中...' : `充值 $${selectedAmount}`}
+            </button>
+            
+            {balance !== null && (
+                <p className="balance">余额: ${balance.toFixed(2)}</p>
+            )}
+            
+            {error && <p className="error">{error}</p>}
+        </div>
+    );
+}
+
+export default TopUpComponent;
+```
+
+### 示例三：Solana 充值
+
+```javascript
+import { x402Client } from '@x402/core/client';
+import { ExactSvmScheme } from '@x402/svm/exact/client';
+import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from '@x402/core/http';
+
+const BASE_URL = 'https://t.ckcloudai.com';
+
+async function solanaTopUp(amountUsd = 10) {
+    // 1. 连接 Phantom 钱包
+    if (!window.solana?.isPhantom) {
+        throw new Error('请安装 Phantom 钱包');
+    }
+    
+    const { publicKey } = await window.solana.connect();
+    console.log('钱包地址:', publicKey.toBase58());
+    
+    // 2. 创建签名器
+    const signer = {
+        address: publicKey,
+        signTransaction: async (transaction) => {
+            return window.solana.signTransaction(transaction);
+        }
+    };
+    
+    // 3. 发起请求
+    const amountMicroUsd = Math.floor(amountUsd * 1_000_000).toString();
+    
+    let response = await fetch(`${BASE_URL}/x402/v1/top-up`, { method: 'POST' });
+    
+    if (response.status === 402) {
+        const paymentRequired = decodePaymentRequiredHeader(
+            response.headers.get('PAYMENT-REQUIRED')
+        );
+        
+        // 修改金额
+        paymentRequired.accepts = paymentRequired.accepts.map(req => ({
+            ...req,
+            amount: amountMicroUsd
+        }));
+        
+        // 选择 Solana 网络的支付选项
+        const solanaReq = paymentRequired.accepts.find(
+            req => req.network.startsWith('solana:')
+        );
+        
+        const client = new x402Client()
+            .register('solana:*', new ExactSvmScheme(signer));
+        
+        const paymentPayload = await client.createPaymentPayload({
+            ...paymentRequired,
+            accepts: [solanaReq]
+        });
+        
+        response = await fetch(`${BASE_URL}/x402/v1/top-up`, {
+            method: 'POST',
+            headers: {
+                'PAYMENT-SIGNATURE': encodePaymentSignatureHeader(paymentPayload)
+            }
+        });
+    }
+    
+    return response.json();
+}
+```
+
+### 示例四：硬编码配置充值（单次请求）⭐ 推荐
+
+使用硬编码配置，**仅需一次请求**即可完成充值：
+
+```javascript
+import { x402Client } from '@x402/core/client';
+import { ExactEvmScheme } from '@x402/evm/exact/client';
+import { encodePaymentSignatureHeader } from '@x402/core/http';
+import { createWalletClient, custom } from 'viem';
+
+// ==================== 硬编码配置（由后端团队提供）====================
+const CONFIG = {
+    baseUrl: 'https://t.ckcloudai.com',
+    // Base 主网
+    evm: {
+        network: 'eip155:8453',
+        chainId: 8453,
+        payTo: '0xYOUR_PAY_TO_ADDRESS',  // ⚠️ 向后端索要此地址
+        asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // Base USDC
+        extra: { name: 'USD Coin', version: '2', decimals: 6 }
+    }
+};
+// =================================================================
+
+async function topUp(amountUsd) {
+    const amountMicroUsd = Math.floor(amountUsd * 1_000_000).toString();
+    
+    // 1. 连接钱包
+    const walletClient = createWalletClient({ transport: custom(window.ethereum) });
+    const [address] = await walletClient.requestAddresses();
+    
+    // 切换到 Base 主网
+    try { await walletClient.switchChain({ id: CONFIG.evm.chainId }); } catch {}
+    
+    // 2. 创建签名器
+    const signer = {
+        address,
+        signTypedData: async (params) => walletClient.signTypedData({ account: address, ...params })
+    };
+    
+    // 3. 直接构建 PaymentRequired（无需请求后端！）
+    const paymentRequired = {
+        x402Version: 2,
+        resource: { url: `${CONFIG.baseUrl}/x402/v1/top-up` },
+        accepts: [{
+            scheme: 'exact',
+            network: CONFIG.evm.network,
+            amount: amountMicroUsd,
+            asset: CONFIG.evm.asset,
+            payTo: CONFIG.evm.payTo,
+            maxTimeoutSeconds: 3600,
+            extra: CONFIG.evm.extra
+        }]
+    };
+    
+    // 4. 创建支付载荷
+    const client = new x402Client().register('eip155:*', new ExactEvmScheme(signer));
+    const paymentPayload = await client.createPaymentPayload(paymentRequired);
+    
+    // 5. 发送请求（仅一次！）
+    const response = await fetch(`${CONFIG.baseUrl}/x402/v1/top-up`, {
+        method: 'POST',
+        headers: { 'PAYMENT-SIGNATURE': encodePaymentSignatureHeader(paymentPayload) }
+    });
+    
+    return response.json();
+}
+
+// 使用
+topUp(10).then(console.log);  // 充值 $10
+```
+
+---
+
+## 常见问题
+
+### Q1: 充值金额有最低限制吗？
+
+最低充值金额为 **$0.01**。但由于链上 gas 费用，建议充值金额不低于 $1。
+
+### Q2: 充值后多久到账？
+
+链上确认后立即到账：
+
+| 网络 | 确认时间 |
+|------|---------|
+| Base 主网 | 2-5 秒 |
+| Solana 主网 | 400ms - 2 秒 |
+
+### Q3: Phantom 钱包在 Solana 主网支付失败？
+
+Phantom 在主网会注入安全指令，可能导致验证失败。建议：
+- 使用 **Backpack** 或 **Solflare** 钱包
+- 或在 **Devnet** 测试网使用 Phantom
+
+### Q4: 如何跳过第一次 402 请求？
+
+如果你已经知道以下信息，可以使用**硬编码配置**跳过第一次请求：
+
+| 需要的信息 | 说明 |
+|-----------|------|
+| `payTo` | 收款地址（向后端团队索要）|
+| `asset` | USDC 合约地址（Base: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`）|
+| `extra.name` / `extra.version` | EIP-712 签名用（`USD Coin` / `2`）|
+
+参考「方式四：硬编码配置」和「示例四」了解具体实现。
+
+如果不确定这些信息，则需要先请求 402 响应来获取它们。
+
+### Q5: 充值失败但钱已扣除怎么办？
+
+x402 保证原子性：支付和业务要么都成功，要么都失败。如遇异常：
+1. 检查交易是否真正上链确认
+2. 联系客服并提供交易哈希
+
+### Q6: 如何查看账户余额？
+
+充值成功后响应包含 `Balance` 字段。也可通过 SIWE 登录后调用 API Key 管理接口查看。
+
+---
+
+## 错误码参考
+
+| 错误信息 | 原因 | 解决方案 |
+|---------|------|---------|
+| `No scheme registered` | 未注册对应网络的支付方案 | 确保注册了正确的 network scheme |
+| `Missing PAYMENT-REQUIRED header` | 服务端未返回 402 响应 | 检查请求 URL 和方法 |
+| `PAYMENT-SIGNATURE decoded error` | 签名格式错误 | 检查 Base64 编码 |
+| `invalid signature` | 签名验证失败 | 确保签名未过期且金额正确 |
+| `Insufficient balance` | USDC 余额不足 | 确保钱包有足够的 USDC |
+
+---
+
+## 参考链接
+
+- [x402 官方文档](https://docs.x402.org/)
+- [x402 GitHub](https://github.com/x402-foundation/x402)
+- [Base 主网](https://basescan.org/)
+- [Solana](https://solana.com/)
+
+---
+
+*文档最后更新: 2024年*
