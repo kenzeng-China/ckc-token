@@ -1,18 +1,18 @@
-# 快速开始
+# Quick Start
 
-> 5 分钟上手 ckc-token API
+> Get started with ckc-token API in 5 minutes
 
-## 前置要求
+## Prerequisites
 
-- 一个有效的 `CKC_TOKEN_API_KEY`
-- 基本的 HTTP 请求知识
-- （可选）已安装 `curl` 或 `jq`
+- A valid `CKC_TOKEN_API_KEY`
+- Basic knowledge of HTTP requests
+- (Optional) `curl` or `jq` installed
 
-## 第一步：获取 API Key
+## Step 1: Get Your API Key
 
-如果你还没有 API Key，请联系管理员获取。
+If you don't have an API Key yet, please contact the administrator to obtain one.
 
-## 第二步：设置环境变量
+## Step 2: Set Environment Variable
 
 **Linux / macOS:**
 
@@ -32,9 +32,9 @@ $env:CKC_TOKEN_API_KEY="your_api_key_here"
 set CKC_TOKEN_API_KEY=your_api_key_here
 ```
 
-## 第三步：发起第一次请求
+## Step 3: Make Your First Request
 
-### 使用 Chat Completions API
+### Using Chat Completions API
 
 ```bash
 curl -X POST "https://api.ckc-token.com/v1/chat/completions" \
@@ -52,7 +52,7 @@ curl -X POST "https://api.ckc-token.com/v1/chat/completions" \
   }'
 ```
 
-### 使用 Responses API
+### Using Responses API
 
 ```bash
 curl -X POST "https://api.ckc-token.com/v1/responses" \
@@ -65,9 +65,9 @@ curl -X POST "https://api.ckc-token.com/v1/responses" \
   }'
 ```
 
-## 第四步：解析响应
+## Step 4: Parse the Response
 
-### Chat Completions 响应格式
+### Chat Completions Response Format
 
 ```json
 {
@@ -92,7 +92,7 @@ curl -X POST "https://api.ckc-token.com/v1/responses" \
 }
 ```
 
-### Responses API 响应格式
+### Responses API Response Format
 
 ```json
 {
@@ -118,21 +118,22 @@ curl -X POST "https://api.ckc-token.com/v1/responses" \
 }
 ```
 
-## 使用示例代码
+## Using Example Code
 
-### Curl 示例
+### Curl Examples
 
 ```bash
-# 克隆仓库
+# Clone the repository
 git clone https://github.com/kenzeng-China/ckc-token.git
 cd ckc-token
 
-# 运行示例
+# Run examples
 export CKC_TOKEN_API_KEY=your_api_key
 bash examples/curl/chat-completions.sh
+bash examples/curl/responses.sh
 ```
 
-### TypeScript 示例
+### TypeScript Examples
 
 ```bash
 cd examples/typescript/fetch
@@ -140,33 +141,33 @@ npm install
 CKC_TOKEN_API_KEY=your_api_key npx tsx src/basic/example.ts
 ```
 
-### Python 示例
+### Python Examples
 
 ```bash
 pip install requests
 CKC_TOKEN_API_KEY=your_api_key python examples/python/chat_completions.py
 ```
 
-## 常见问题
+## Common Issues
 
-### Q: 请求返回 401 Unauthorized
+### Q: Request returns 401 Unauthorized
 
-**A:** 检查 API Key 是否正确设置：
+**A:** Check if the API Key is correctly set:
 
 ```bash
-echo $CKC_TOKEN_API_KEY  # 应该显示你的 API Key
+echo $CKC_TOKEN_API_KEY  # Should display your API Key
 ```
 
-### Q: 请求返回 400 Bad Request
+### Q: Request returns 400 Bad Request
 
-**A:** 检查请求体格式是否正确，确保：
-- `Content-Type: application/json` 头已设置
-- JSON 格式正确（可用 `jq` 验证）
-- 必填字段 `model` 和 `messages`/`input` 已提供
+**A:** Check if the request body format is correct:
+- Ensure `Content-Type: application/json` header is set
+- Validate JSON format (use `jq` to verify)
+- Ensure required fields `model` and `messages`/`input` are provided
 
-### Q: 如何查看详细错误信息？
+### Q: How to see detailed error information?
 
-**A:** 错误响应体包含详细信息：
+**A:** The error response body contains detailed information:
 
 ```json
 {
@@ -178,12 +179,11 @@ echo $CKC_TOKEN_API_KEY  # 应该显示你的 API Key
 }
 ```
 
-## 下一步
+## Next Steps
 
-- 📖 阅读 [API 参考文档](api-reference.md)
-- 🔍 了解 [错误码说明](error-codes.md)
-- 📚 查看 [产品介绍](product-introduction.md)
+- 📖 Read the [API Reference](../api/) documentation
+- 📚 Check out [Product Introduction](product-introduction.md)
 
 ---
 
-**准备好了吗？** 开始构建你的 AI 应用吧！ 🚀
+**Ready?** Start building your AI application! 🚀
