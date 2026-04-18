@@ -1,1027 +1,501 @@
-# CKCloud API 文档
-
-本文档描述了 CKCloud 的用户认证与 API Key 管理接口。这些接口采用 **SIWE (Sign-In with Ethereum)** 进行身份验证，允许用户通过以太坊钱包登录并管理自己的 API Key。
-
----
-
-## 目录
-
-1. [概述](#概述)
-2. [SIWE 登录原理](#siwe-登录原理)
-3. [API 接口](#api-接口)
-   - [3.1 获取登录消息](#31-获取登录消息)
-   - [3.2 验证签名并登录](#32-验证签名并登录)
-   - [3.3 创建 API Key](#33-创建-api-key)
-   - [3.4 获取 API Key 列表](#34-获取-api-key-列表)
-   - [3.5 删除 API Key](#35-删除-api-key)
-4. [完整示例代码](#完整示例代码)
-5. [常见问题](#常见问题)
-
----
-
-## 概述
-
-### 什么是 SIWE？
-
-**SIWE (Sign-In with Ethereum)** 是一种去中心化的身份验证标准，允许用户使用以太坊钱包（如 MetaMask）登录网站，而无需传统的用户名和密码。
-
-### 核心流程
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        SIWE 登录流程                                  │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  前端                          后端                       钱包        │
-│   │                             │                          │        │
-│   │  1. 连接钱包                 │                          │         │
-│   │ ──────────────────────────────────────────────────────>         │
-│   │ <──────────────────────────────────────────────────────         │
-│   │   返回钱包地址                │                          │        │
-│   │                             │                          │        │
-│   │  2. 请求登录消息              │                          │        │
-│   │ ─────────────────────────>  │                          │        │
-│   │ <─────────────────────────  │                          │        │
-│   │   返回 SIWE 消息              │                          │        │
-│   │                             │                          │        │
-│   │  3. 请求钱包签名              │                          │        │
-│   │ ──────────────────────────────────────────────────────>         │
-│   │ <──────────────────────────────────────────────────────         │
-│   │   返回签名                   │                          │        │
-│   │                             │                          │        │
-│   │  4. 提交验证                 │                          │        │
-│   │ ─────────────────────────>  │                          │        │
-│   │ <─────────────────────────  │                          │        │
-│   │   设置 Cookie，登录成功       │                          │        │
-│   │                             │                          │        │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### 认证方式说明
-
-| 端点类型 | 认证方式 | 说明 |
-|---------|---------|------|
-| 登录相关 | 无需认证 | 用于获取消息和验证签名 |
-| API Key 管理 | Cookie JWT | 登录成功后通过 Cookie 自动携带 |
-| API 调用 | API Key | 在请求头中携带 `Authorization: Bearer sk-xxx` |
-
----
-
-## SIWE 登录原理
-
-### 为什么需要两步验证？
-
-SIWE 的安全性建立在以下原则：
-
-1. **服务器生成消息**：防止重放攻击，消息中包含随机 nonce 和时间戳
-2. **用户私钥签名**：证明用户确实拥有该钱包地址
-3. **服务器验证签名**：验证签名与地址匹配，完成身份确认
-
-### SIWE 消息格式
-
-SIWE 消息遵循 [EIP-4361](https://eips.ethereum.org/EIPS/eip-4361) 标准，格式如下：
-
-```
-t.ckcloudai.com wants you to sign in with your Ethereum account:
-0x774b3f6C5a6F8e2D9A1B3C4d5E6f7A8b9C0D1e2F
-
-URI: https://t.ckcloudai.com
-Version: 1
-Chain ID: 1
-Nonce: a1b2c3d4e5f6
-Issued At: 2024-01-15T10:30:00Z
-Expiration Time: 2024-01-15T10:45:00Z
-```
-
-**字段说明**：
-
-| 字段 | 说明 |
-|-----|------|
-| `domain` | 请求签名的域名，防止钓鱼攻击 |
-| `address` | 用户钱包地址 |
-| `nonce` | 随机字符串，防止重放攻击 |
-| `issued-at` | 消息生成时间 |
-| `expiration-time` | 消息过期时间 |
-
----
-
-## API 接口
-
-### 基础信息
-
-- **Base URL**: `https://t.ckcloudai.com`
-- **Content-Type**: `application/json`
-
----
-
-### 3.1 获取登录消息
-
-获取用于 SIWE 登录的消息文本，该消息需要用户使用钱包签名。
-
-#### 请求信息
-
-| 项目 | 值 |
-|-----|-----|
-| **URL** | `/v1/login/siwe/message` |
-| **Method** | `POST` |
-| **认证** | 无需认证 |
-
-#### 请求参数
-
-```json
-{
-    "Pubkey": "0x774b3f6C5a6F8e2D9A1B3C4d5E6f7A8b9C0D1e2F"
-}
-```
-
-| 参数名 | 类型 | 必填 | 说明 |
-|-------|------|------|------|
-| `Pubkey` | string | 是 | 用户钱包地址，需以 `0x` 开头 |
-
-#### 响应参数
-
-**成功响应 (HTTP 200)**:
-
-```json
-{
-    "Message": "t.ckcloudai.com wants you to sign in with your Ethereum account:\n0x774b3f6C5a6F8e2D9A1B3C4d5E6f7A8b9C0D1e2F\n\nURI: https://t.ckcloudai.com\nVersion: 1\nChain ID: 1\nNonce: a1b2c3d4e5f6\nIssued At: 2024-01-15T10:30:00Z\nExpiration Time: 2024-01-15T10:45:00Z"
-}
-```
-
-| 参数名 | 类型 | 说明 |
-|-------|------|------|
-| `Message` | string | SIWE 格式的登录消息，用于钱包签名 |
-
-**错误响应**:
-
-| HTTP 状态码 | 响应体 | 说明 |
-|------------|--------|------|
-| 400 | `{"error": "invalid request"}` | 请求参数无效 |
-| 500 | `{"error": "failed to generate message"}` | 服务器内部错误 |
-
-#### JavaScript 调用示例
-
-```javascript
-async function getLoginMessage(address) {
-    const response = await fetch('https://t.ckcloudai.com/v1/login/siwe/message', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            Pubkey: address
-        })
-    });
-    
-    const data = await response.json();
-    
-    if (!response.ok) {
-        throw new Error(data.error || 'Failed to get message');
-    }
-    
-    return data.Message;
-}
-```
-
----
-
-### 3.2 验证签名并登录
-
-提交签名后的消息，验证成功后将设置登录 Cookie。
-
-#### 请求信息
-
-| 项目 | 值 |
-|-----|-----|
-| **URL** | `/v1/login/siwe/verify` |
-| **Method** | `POST` |
-| **认证** | 无需认证 |
-
-#### 请求参数
-
-```json
-{
-    "Message": "t.ckcloudai.com wants you to sign in with your Ethereum account:\n0x...",
-    "Signature": "0x7d299b8c4a1f3e5d7c9b2a4f6e8d1c3b5a7f9e2d4c6b8a0f2e4d6c8b0a2f4e6d..."
-}
-```
-
-| 参数名 | 类型 | 必填 | 说明 |
-|-------|------|------|------|
-| `Message` | string | 是 | 从 `/message` 接口获取的原始消息 |
-| `Signature` | string | 是 | 钱包签名结果，十六进制格式 |
-
-#### 响应参数
-
-**成功响应 (HTTP 200)**:
-
-```json
-{
-    "Pubkey": "0x774b3f6C5a6F8e2D9A1B3C4d5E6f7A8b9C0D1e2F"
-}
-```
-
-| 参数名 | 类型 | 说明 |
-|-------|------|------|
-| `Pubkey` | string | 验证通过的钱包地址 |
-
-**重要**: 响应会设置 `Set-Cookie` 头，后续请求需携带此 Cookie：
-
-```
-Set-Cookie: ckcloud=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...; Path=/; HttpOnly; Secure
-```
-
-**错误响应**:
-
-| HTTP 状态码 | 响应体 | 说明 |
-|------------|--------|------|
-| 400 | `{"error": "invalid request"}` | 请求参数无效 |
-| 401 | `{"error": "invalid signature"}` | 签名验证失败 |
-| 500 | `{"error": "failed to create user"}` | 创建用户失败 |
-
-#### JavaScript 调用示例
-
-```javascript
-async function verifyAndLogin(message, signature) {
-    const response = await fetch('https://t.ckcloudai.com/v1/login/siwe/verify', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        credentials: 'include',  // 重要：允许携带和接收 Cookie
-        body: JSON.stringify({
-            Message: message,
-            Signature: signature
-        })
-    });
-    
-    const data = await response.json();
-    
-    if (!response.ok) {
-        throw new Error(data.error || 'Verification failed');
-    }
-    
-    return data.Pubkey;
-}
-```
-
----
-
-### 3.3 创建 API Key
-
-创建新的 API Key，用于后续 API 调用认证。
-
-#### 请求信息
-
-| 项目 | 值 |
-|-----|-----|
-| **URL** | `/v1/api-key/create` |
-| **Method** | `POST` |
-| **认证** | Cookie JWT（需先完成 SIWE 登录） |
-
-#### 请求参数
-
-```json
-{
-    "Name": "my-api-key"
-}
-```
-
-| 参数名 | 类型 | 必填 | 说明 |
-|-------|------|------|------|
-| `Name` | string | 是 | API Key 的名称，用于标识用途 |
-
-#### 响应参数
-
-**成功响应 (HTTP 200)**:
-
-```json
-{
-    "ApiKey": "sk-B5M9GCYZmw4ytzShXCNvppyrpQ5E7G1EdRdzZ4gG6Qhu"
-}
-```
-
-| 参数名 | 类型 | 说明 |
-|-------|------|------|
-| `ApiKey` | string | 生成的 API Key，以 `sk-` 开头，**请妥善保存** |
-
-> ⚠️ **重要提示**: API Key 仅在创建时返回完整值，后续查询列表时会进行脱敏处理。请创建后立即保存。
-
-**错误响应**:
-
-| HTTP 状态码 | 响应体 | 说明 |
-|------------|--------|------|
-| 400 | `{"error": "invalid request"}` | 请求参数无效 |
-| 401 | `{"error": "unauthorized"}` | 未登录或 Cookie 已过期 |
-| 500 | `{"error": "failed to generate API key"}` | 生成失败 |
-| 500 | `{"error": "failed to save API key"}` | 保存失败 |
-
-#### JavaScript 调用示例
-
-```javascript
-async function createApiKey(name) {
-    const response = await fetch('https://t.ckcloudai.com/v1/api-key/create', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        credentials: 'include',  // 携带登录 Cookie
-        body: JSON.stringify({
-            Name: name
-        })
-    });
-    
-    const data = await response.json();
-    
-    if (!response.ok) {
-        throw new Error(data.error || 'Failed to create API key');
-    }
-    
-    // ⚠️ 请保存 API Key，后续无法再次查看完整值
-    console.log('Your API Key:', data.ApiKey);
-    return data.ApiKey;
-}
-```
-
----
-
-### 3.4 获取 API Key 列表
-
-分页获取当前用户的所有 API Key 列表。
-
-#### 请求信息
-
-| 项目 | 值 |
-|-----|-----|
-| **URL** | `/v1/api-key/list` |
-| **Method** | `GET` |
-| **认证** | Cookie JWT（需先完成 SIWE 登录） |
-
-#### 查询参数
-
-| 参数名 | 类型 | 必填 | 默认值 | 说明 |
-|-------|------|------|--------|------|
-| `Page` | integer | 否 | 1 | 页码，从 1 开始 |
-| `Limit` | integer | 否 | 20 | 每页数量 |
-
-#### 请求示例
-
-```
-GET /v1/api-key/list?Page=1&Limit=20
-```
-
-#### 响应参数
-
-**成功响应 (HTTP 200)**:
-
-```json
-{
-    "Keys": [
-        {
-            "Id": 1165098538693787650,
-            "Name": "production",
-            "ApiKey": "sk-9de...fa6",
-            "CreatedAt": 1775659056
-        },
-        {
-            "Id": 1165098867007389698,
-            "Name": "development",
-            "ApiKey": "sk-B5M...Qhu",
-            "CreatedAt": 1775659156
-        }
-    ],
-    "Total": 2,
-    "Limit": 20,
-    "CurrentPage": 1,
-    "TotalPages": 1
-}
-```
-
-| 参数名 | 类型 | 说明 |
-|-------|------|------|
-| `Keys` | array | API Key 列表 |
-| `Keys[].Id` | integer | API Key 的唯一标识符，用于删除操作 |
-| `Keys[].Name` | string | API Key 名称 |
-| `Keys[].ApiKey` | string | **脱敏后的** API Key（仅显示前 8 位和后 3 位） |
-| `Keys[].CreatedAt` | integer | 创建时间（Unix 时间戳，秒） |
-| `Total` | integer | 总记录数 |
-| `Limit` | integer | 当前页大小 |
-| `CurrentPage` | integer | 当前页码 |
-| `TotalPages` | integer | 总页数 |
-
-**错误响应**:
-
-| HTTP 状态码 | 响应体 | 说明 |
-|------------|--------|------|
-| 401 | `{"error": "unauthorized"}` | 未登录或 Cookie 已过期 |
-| 500 | `{"error": "failed to list API keys"}` | 查询失败 |
-
-#### JavaScript 调用示例
-
-```javascript
-async function listApiKeys(page = 1, limit = 20) {
-    const response = await fetch(
-        `https://t.ckcloudai.com/v1/api-key/list?Page=${page}&Limit=${limit}`,
-        {
-            method: 'GET',
-            credentials: 'include'  // 携带登录 Cookie
-        }
-    );
-    
-    const data = await response.json();
-    
-    if (!response.ok) {
-        throw new Error(data.error || 'Failed to list API keys');
-    }
-    
-    return data;
-}
-
-// 使用示例
-const result = await listApiKeys(1, 10);
-console.log(`共 ${result.Total} 个 API Key`);
-result.Keys.forEach(key => {
-    console.log(`- [${key.Name}] ${key.ApiKey}`);
-});
-```
-
----
-
-### 3.5 删除 API Key
-
-删除指定的 API Key。
-
-#### 请求信息
-
-| 项目 | 值 |
-|-----|-----|
-| **URL** | `/v1/api-key/delete` |
-| **Method** | `POST` |
-| **认证** | Cookie JWT（需先完成 SIWE 登录） |
-
-#### 请求参数
-
-```json
-{
-    "Id": 1165098538693787650
-}
-```
-
-| 参数名 | 类型 | 必填 | 说明 |
-|-------|------|------|------|
-| `Id` | integer | 是 | 要删除的 API Key ID（从列表接口获取） |
-
-#### 响应参数
-
-**成功响应 (HTTP 200)**:
-
-```json
-{
-    "Id": 1165098538693787650
-}
-```
-
-| 参数名 | 类型 | 说明 |
-|-------|------|------|
-| `Id` | integer | 已删除的 API Key ID |
-
-**错误响应**:
-
-| HTTP 状态码 | 响应体 | 说明 |
-|------------|--------|------|
-| 400 | `{"error": "invalid request"}` | 请求参数无效 |
-| 401 | `{"error": "unauthorized"}` | 未登录或 Cookie 已过期 |
-| 500 | `{"error": "failed to delete API key"}` | 删除失败（可能无权删除） |
-
-#### JavaScript 调用示例
-
-```javascript
-async function deleteApiKey(id) {
-    const response = await fetch('https://t.ckcloudai.com/v1/api-key/delete', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-            Id: id
-        })
-    });
-    
-    const data = await response.json();
-    
-    if (!response.ok) {
-        throw new Error(data.error || 'Failed to delete API key');
-    }
-    
-    return data.Id;
-}
-```
-
----
-
-## 完整示例代码
-
-### 方式一：使用 MetaMask（推荐）
-
-以下是一个完整的登录并创建 API Key 的示例：
-
-```html
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CKCloud 登录示例</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            background: #f5f5f5;
-        }
-        .container {
-            background: white;
-            border-radius: 12px;
-            padding: 24px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        }
-        h1 { color: #333; margin-bottom: 24px; }
-        .step {
-            margin: 16px 0;
-            padding: 16px;
-            background: #f9f9f9;
-            border-radius: 8px;
-            border-left: 4px solid #007bff;
-        }
-        .step h3 { margin: 0 0 8px 0; color: #007bff; }
-        button {
-            background: #007bff;
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            margin-right: 8px;
-            margin-top: 8px;
-        }
-        button:hover { background: #0056b3; }
-        button:disabled { background: #ccc; cursor: not-allowed; }
-        button.success { background: #28a745; }
-        .status {
-            margin-top: 16px;
-            padding: 12px;
-            border-radius: 6px;
-            background: #e7f3ff;
-        }
-        .status.error { background: #ffe7e7; color: #c00; }
-        .status.success { background: #e7ffe7; color: #060; }
-        .log {
-            margin-top: 16px;
-            padding: 12px;
-            background: #1e1e1e;
-            color: #0f0;
-            border-radius: 6px;
-            font-family: monospace;
-            font-size: 12px;
-            white-space: pre-wrap;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-        input {
-            padding: 8px 12px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            margin-right: 8px;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🔐 CKCloud 钱包登录示例</h1>
-        
-        <div class="step">
-            <h3>步骤 1: 连接钱包</h3>
-            <p>点击按钮连接您的 MetaMask 钱包</p>
-            <button onclick="connectWallet()">连接 MetaMask</button>
-        </div>
-        
-        <div class="step">
-            <h3>步骤 2: 获取登录消息</h3>
-            <p>从服务器获取需要签名的消息</p>
-            <button onclick="getMessage()" id="btnMsg" disabled>获取消息</button>
-        </div>
-        
-        <div class="step">
-            <h3>步骤 3: 签名消息</h3>
-            <p>使用钱包对消息进行签名（MetaMask 会弹出确认窗口）</p>
-            <button onclick="signMessage()" id="btnSign" disabled>签名消息</button>
-        </div>
-        
-        <div class="step">
-            <h3>步骤 4: 验证并登录</h3>
-            <p>提交签名完成登录验证</p>
-            <button onclick="verify()" id="btnVerify" disabled>验证登录</button>
-        </div>
-        
-        <div class="step">
-            <h3>步骤 5: 创建 API Key</h3>
-            <input type="text" id="keyName" placeholder="输入 API Key 名称" value="my-key">
-            <button onclick="createKey()" id="btnCreate" disabled>创建 API Key</button>
-        </div>
-        
-        <div id="status" class="status">请先连接钱包开始</div>
-        <div id="log" class="log"></div>
-    </div>
-
-    <script>
-        // 配置
-        const BASE_URL = 'https://t.ckcloudai.com';
-        
-        // 状态变量
-        let walletAddress = null;
-        let siweMessage = null;
-        let signature = null;
-        
-        // 工具函数
-        function log(msg) {
-            const logEl = document.getElementById('log');
-            const time = new Date().toLocaleTimeString();
-            logEl.textContent += `[${time}] ${msg}\n`;
-            logEl.scrollTop = logEl.scrollHeight;
-        }
-        
-        function setStatus(msg, type = '') {
-            const statusEl = document.getElementById('status');
-            statusEl.textContent = msg;
-            statusEl.className = 'status ' + type;
-        }
-        
-        function enableButton(id, enable = true) {
-            document.getElementById(id).disabled = !enable;
-        }
-        
-        // 步骤 1: 连接钱包
-        async function connectWallet() {
-            if (!window.ethereum) {
-                setStatus('❌ 未检测到 MetaMask！请先安装 MetaMask 扩展。', 'error');
-                return;
-            }
-            
-            try {
-                log('正在请求钱包连接...');
-                const accounts = await ethereum.request({ 
-                    method: 'eth_requestAccounts' 
-                });
-                
-                walletAddress = accounts[0];
-                log(`✅ 已连接钱包: ${walletAddress}`);
-                setStatus(`✅ 钱包已连接: ${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`, 'success');
-                
-                enableButton('btnMsg', true);
-            } catch (error) {
-                log(`❌ 连接失败: ${error.message}`);
-                setStatus('❌ 连接失败: ' + error.message, 'error');
-            }
-        }
-        
-        // 步骤 2: 获取登录消息
-        async function getMessage() {
-            try {
-                log('正在获取登录消息...');
-                
-                const response = await fetch(`${BASE_URL}/v1/login/siwe/message`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ Pubkey: walletAddress })
-                });
-                
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.error || '请求失败');
-                }
-                
-                siweMessage = data.Message;
-                log('✅ 已获取登录消息:');
-                log(siweMessage);
-                setStatus('✅ 已获取登录消息，请进行签名', 'success');
-                
-                enableButton('btnSign', true);
-            } catch (error) {
-                log(`❌ 获取消息失败: ${error.message}`);
-                setStatus('❌ 获取消息失败: ' + error.message, 'error');
-            }
-        }
-        
-        // 步骤 3: 签名消息
-        async function signMessage() {
-            try {
-                log('正在请求签名...');
-                log('请在 MetaMask 弹窗中确认签名');
-                
-                // 使用 personal_sign 方法进行签名
-                signature = await ethereum.request({
-                    method: 'personal_sign',
-                    params: [siweMessage, walletAddress]
-                });
-                
-                log(`✅ 签名成功: ${signature.slice(0, 20)}...${signature.slice(-10)}`);
-                setStatus('✅ 签名完成，请提交验证', 'success');
-                
-                enableButton('btnVerify', true);
-            } catch (error) {
-                log(`❌ 签名失败: ${error.message}`);
-                setStatus('❌ 签名失败: ' + error.message, 'error');
-            }
-        }
-        
-        // 步骤 4: 验证并登录
-        async function verify() {
-            try {
-                log('正在验证签名...');
-                
-                const response = await fetch(`${BASE_URL}/v1/login/siwe/verify`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',  // 重要: 允许接收 Cookie
-                    body: JSON.stringify({
-                        Message: siweMessage,
-                        Signature: signature
-                    })
-                });
-                
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.error || '验证失败');
-                }
-                
-                log(`✅ 登录成功! 用户地址: ${data.Pubkey}`);
-                setStatus('✅ 登录成功！现在可以创建 API Key', 'success');
-                
-                enableButton('btnCreate', true);
-            } catch (error) {
-                log(`❌ 验证失败: ${error.message}`);
-                setStatus('❌ 验证失败: ' + error.message, 'error');
-            }
-        }
-        
-        // 步骤 5: 创建 API Key
-        async function createKey() {
-            const name = document.getElementById('keyName').value || 'my-key';
-            
-            try {
-                log(`正在创建 API Key，名称: ${name}...`);
-                
-                const response = await fetch(`${BASE_URL}/v1/api-key/create`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
-                    body: JSON.stringify({ Name: name })
-                });
-                
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.error || '创建失败');
-                }
-                
-                log(`✅ API Key 创建成功!`);
-                log(`🔑 请立即保存: ${data.ApiKey}`);
-                log(`⚠️ 此 Key 仅显示一次，请妥善保管！`);
-                setStatus(`✅ API Key 已创建！请查看日志并保存。`, 'success');
-                
-                // 可以在这里复制到剪贴板
-                // navigator.clipboard.writeText(data.ApiKey);
-            } catch (error) {
-                log(`❌ 创建失败: ${error.message}`);
-                setStatus('❌ 创建失败: ' + error.message, 'error');
-            }
-        }
-        
-        // 监听钱包切换
-        if (window.ethereum) {
-            ethereum.on('accountsChanged', (accounts) => {
-                if (accounts.length === 0) {
-                    log('钱包已断开连接');
-                    walletAddress = null;
-                    resetButtons();
-                } else {
-                    walletAddress = accounts[0];
-                    log(`钱包已切换: ${walletAddress}`);
-                }
-            });
-        }
-        
-        function resetButtons() {
-            ['btnMsg', 'btnSign', 'btnVerify', 'btnCreate'].forEach(id => {
-                enableButton(id, false);
-            });
-        }
-    </script>
-</body>
-</html>
-```
-
-### 方式二：使用 ethers.js 库
-
-如果您使用 React/Vue 等框架开发，推荐使用 ethers.js：
-
-```javascript
-import { ethers } from 'ethers';
-
-const BASE_URL = 'https://t.ckcloudai.com';
-
-class CKCloudAuth {
-    constructor() {
-        this.provider = null;
-        this.signer = null;
-        this.address = null;
-    }
-    
-    // 初始化钱包连接
-    async connect() {
-        if (!window.ethereum) {
-            throw new Error('请安装 MetaMask');
-        }
-        
-        this.provider = new ethers.BrowserProvider(window.ethereum);
-        const accounts = await this.provider.send('eth_requestAccounts', []);
-        this.signer = await this.provider.getSigner();
-        this.address = accounts[0];
-        
-        return this.address;
-    }
-    
-    // 完整登录流程
-    async login() {
-        if (!this.signer) {
-            await this.connect();
-        }
-        
-        // 1. 获取消息
-        const msgResponse = await fetch(`${BASE_URL}/v1/login/siwe/message`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ Pubkey: this.address })
-        });
-        
-        const { Message } = await msgResponse.json();
-        
-        // 2. 签名
-        const signature = await this.signer.signMessage(Message);
-        
-        // 3. 验证
-        const verifyResponse = await fetch(`${BASE_URL}/v1/login/siwe/verify`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({
-                Message: Message,
-                Signature: signature
-            })
-        });
-        
-        const { Pubkey } = await verifyResponse.json();
-        return Pubkey;
-    }
-    
-    // 创建 API Key
-    async createApiKey(name) {
-        const response = await fetch(`${BASE_URL}/v1/api-key/create`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({ Name: name })
-        });
-        
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error);
-        return data.ApiKey;
-    }
-    
-    // 获取 API Key 列表
-    async listApiKeys(page = 1, limit = 20) {
-        const response = await fetch(
-            `${BASE_URL}/v1/api-key/list?Page=${page}&Limit=${limit}`,
-            { credentials: 'include' }
-        );
-        
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error);
-        return data;
-    }
-    
-    // 删除 API Key
-    async deleteApiKey(id) {
-        const response = await fetch(`${BASE_URL}/v1/api-key/delete`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({ Id: id })
-        });
-        
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error);
-        return data.Id;
-    }
-}
-
-// 使用示例
-async function main() {
-    const auth = new CKCloudAuth();
-    
-    try {
-        // 登录
-        const address = await auth.login();
-        console.log('登录成功:', address);
-        
-        // 创建 API Key
-        const apiKey = await auth.createApiKey('my-app-key');
-        console.log('API Key:', apiKey);
-        
-        // 列出所有 Key
-        const keys = await auth.listApiKeys();
-        console.log('我的 API Keys:', keys);
-        
-    } catch (error) {
-        console.error('操作失败:', error.message);
-    }
-}
-
-main();
-```
-
----
-
-## 常见问题
-
-### Q1: 为什么需要两次请求才能完成登录？
-
-SIWE 采用挑战-响应模式：
-1. **获取消息**：服务器生成包含随机 nonce 的消息，防止重放攻击
-2. **验证签名**：证明用户确实拥有该钱包的私钥
-
-这种设计确保了安全性，同时无需用户暴露私钥。
-
-### Q2: Cookie 会过期吗？
-
-是的，Cookie 中包含的 JWT Token 有有效期（默认配置）。过期后需要重新执行 SIWE 登录流程。
-
-### Q3: API Key 忘记了怎么办？
-
-API Key 仅在创建时显示完整值。如果忘记了，需要：
-1. 删除旧的 Key
-2. 创建新的 Key
-3. 更新您的应用程序配置
-
-### Q4: 可以创建多少个 API Key？
-
-目前没有限制，但建议根据使用场景合理命名和管理。
-
-### Q5: 如何使用 API Key 调用接口？
-
-创建 API Key 后，可以在调用 LLM API 时使用：
-
-```bash
-curl https://t.ckcloudai.com/v1/chat/completions \
-  -H "Authorization: Bearer sk-your-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-### Q6: 跨域请求需要注意什么？
-
-确保：
-- 使用 `credentials: 'include'` 以携带 Cookie
-- 服务端已配置正确的 CORS 策略
-- 使用 HTTPS 协议（生产环境）
-
-### Q7: 用户切换钱包地址怎么办？
-
-前端应监听 `accountsChanged` 事件，当用户切换钱包时：
-1. 清除当前登录状态
-2. 重新执行登录流程
-
-```javascript
-ethereum.on('accountsChanged', (accounts) => {
-    // 检测到钱包切换，需要重新登录
-    window.location.reload();
-});
-```
-
----
-
-## 联系支持
-
-如有问题，请联系技术支持团队。
-
----
-
-*文档最后更新: 2024年*
+     1|# CKCloud API documentation
+     2|
+     3|This document describes CKCloud’s user authentication and API Key management interface. These interfaces use **SIWE (Sign-In with Ethereum)** for authentication, allowing users to log in and manage their own API Keys through their Ethereum wallet.
+     4|
+     5|---
+     6|
+     7|## Table of contents
+     8|
+     9|1. [Overview](#overview)
+    10|2. [SIWE Login Principle](#siwe-Login Principle)
+    11|3. [API interface](#api-interface)
+    12|- [3.1 Get login message](#31-Get login message)
+    13|- [3.2 Verify signature and log in](#32-Verify signature and log in)
+    14|- [3.3 Create API Key](#33-Create-api-key)
+    15|- [3.4 Get API Key list](#34-get-api-key-list)
+    16|- [3.5 Delete API Key](#35-Delete-api-key)
+    17|4. [Complete sample code](#Complete sample code)
+    18|5. [FAQ](#FAQ)
+    19|
+    20|---
+    21|
+    22|## Overview
+    23|
+    24|### What is SIWE?
+    25|
+    26|**SIWE (Sign-In with Ethereum)** is a decentralized authentication standard that allows users to log into websites using an Ethereum wallet (such as MetaMask) without the need for traditional usernames and passwords.
+    27|
+    28|### core process
+    29|
+    30|```
+    31|┌─────────────────────────────────────────────────────────────────────┐
+    32|│ SIWE login process │
+    33|├─────────────────────────────────────────────────────────────────────┤
+    34|│                                                                     │
+    35|│ Front-end Back-end Wallet │
+    36|│   │                             │                          │        │
+    37|│ │ 1. Connect wallet │ │ │
+    38|│   │ ──────────────────────────────────────────────────────>         │
+    39|│   │ <──────────────────────────────────────────────────────         │
+    40|│ │ Return to wallet address │ │ │
+    41|│   │                             │                          │        │
+    42|│ │ 2. Request login message │ │ │
+    43|│   │ ─────────────────────────>  │                          │        │
+    44|│   │ <─────────────────────────  │                          │        │
+    45|│ │ Return SIWE message │ │ │
+    46|│   │                             │                          │        │
+    47|│ │ 3. Request wallet signature │ │ │
+    48|│   │ ──────────────────────────────────────────────────────>         │
+    49|│   │ <──────────────────────────────────────────────────────         │
+    50|│ │ Return signature │ │ │
+    51|│   │                             │                          │        │
+    52|│ │ 4. Submit verification │ │ │
+    53|│   │ ─────────────────────────>  │                          │        │
+    54|│   │ <─────────────────────────  │                          │        │
+    55|│ │ Set Cookie and log in successfully │ │ │
+    56|│   │                             │                          │        │
+    57|└─────────────────────────────────────────────────────────────────────┘
+    58|```
+    59|
+    60|### Authentication method description
+    61|
+    62||endpoint type|Authentication method|illustrate|
+    63||---------|---------|------|
+    64||Login related|No certification required|Used to obtain messages and verify signatures|
+    65||API key management|Cookie JWT|Automatically carried through cookies after successful login|
+    66||API calls|API Key|Carry `Authorization: Bearer *** in the request header|
+    67|
+    68|---
+    69|
+    70|## SIWE login principle
+    71|
+    72|### Why do I need two-step verification?
+    73|
+    74|SIWE's security is based on the following principles:
+    75|
+    76|1. **Server generated message**: To prevent replay attacks, the message contains random nonce and timestamp
+    77|2. **User private key signature**: Proves that the user indeed owns the wallet address
+    78|3. **Server verification signature**: Verify that the signature matches the address and complete the identity confirmation.
+    79|
+    80|### SIWE message format
+    81|
+    82|SIWE message follows [EIP-4361](https:// eips.ethereum.org/EIPS/eip-4361) standard, the format is as follows:
+    83|
+    84|```
+    85|t.ckcloudai.com wants you to sign in with your Ethereum account:
+    86|0x774b3f6C5a6F8e2D9A1B3C4d5E6f7A8b9C0D1e2F
+    87|
+    88|URI: https://t.ckcloudai.com
+    89|Version: 1
+    90|Chain ID: 1
+    91|Nonce: a1b2c3d4e5f6
+    92|Issued At: 2024-01-15T10:30:00Z
+    93|Expiration Time: 2024-01-15T10:45:00Z
+    94|```
+    95|
+    96|**Field Description**:
+    97|
+    98||Field|illustrate|
+    99||-----|------|
+   100||`domain`|Request a signed domain name to prevent phishing attacks|
+   101||`address`|User wallet address|
+   102||`nonce`|Random string to prevent replay attacks|
+   103||`issued-at`|Message generation time|
+   104||`expiration-time`|Message expiration time|
+   105|
+   106|---
+   107|
+   108|## API interface
+   109|
+   110|### Basic information
+   111|
+   112|- **Base URL**: `https://t.ckcloudai.com`
+   113|- **Content-Type**: `application/json`
+   114|
+   115|---
+   116|
+   117|### 3.1 Get login information
+   118|
+   119|Get the text of the message used for SIWE login that requires the user to sign using the wallet.
+   120|
+   121|#### request information
+   122|
+   123||project|value|
+   124||-----|-----|
+   125|| **URL** | `/v1/login/siwe/message` |
+   126|| **Method** | `POST` |
+   127||**Certification**|No certification required|
+   128|
+   129|#### Request parameters
+   130|
+   131|```json
+   132|{
+   133|    "Pubkey": "0x774b3f6C5a6F8e2D9A1B3C4d5E6f7A8b9C0D1e2F"
+   134|}
+   135|```
+   136|
+   137||Parameter name|type|Required|illustrate|
+   138||-------|------|------|------|
+   139||`Pubkey`|string|yes|User wallet address, must start with `0x`|
+   140|
+   141|#### response parameters
+   142|
+   143|**Successful response (HTTP 200)**:
+   144|
+   145|```json
+   146|{
+   147|    "Message": "t.ckcloudai.com wants you to sign in with your Ethereum account:\n0x774b3f6C5a6F8e2D9A1B3C4d5E6f7A8b9C0D1e2F\n\nURI: https://t.ckcloudai.com\nVersion: 1\nChain ID: 1\nNonce: a1b2c3d4e5f6\nIssued At: 2024-01-15T10:30:00Z\nExpiration Time: 2024-01-15T10:45:00Z"
+   148|}
+   149|```
+   150|
+   151||Parameter name|type|illustrate|
+   152||-------|------|------|
+   153||`Message`|string|Login message in SIWE format for wallet signing|
+   154|
+   155|**Error response**:
+   156|
+   157||HTTP status code|response body|illustrate|
+   158||------------|--------|------|
+   159||400|`{"error": "invalid request"}`|Invalid request parameter|
+   160||500|`{"error": "failed to generate message"}`|Server internal error|
+   161|
+   162|#### JavaScript call example
+   163|
+   164|```javascript
+   165|async function getLoginMessage(address) {
+   166|    const response = await fetch('https://t.ckcloudai.com/v1/login/siwe/message', {
+   167|        method: 'POST',
+   168|        headers: {
+   169|            'Content-Type': 'application/json'
+   170|        },
+   171|        body: JSON.stringify({
+   172|            Pubkey: address
+   173|        })
+   174|    });
+   175|    
+   176|    const data = await response.json();
+   177|    
+   178|    if (!response.ok) {
+   179|        throw new Error(data.error || 'Failed to get message');
+   180|    }
+   181|    
+   182|    return data.Message;
+   183|}
+   184|```
+   185|
+   186|---
+   187|
+   188|### 3.2 Verify signature and log in
+   189|
+   190|Submit the signed message and the login cookie will be set after successful verification.
+   191|
+   192|#### request information
+   193|
+   194||project|value|
+   195||-----|-----|
+   196|| **URL** | `/v1/login/siwe/verify` |
+   197|| **Method** | `POST` |
+   198||**Certification**|No certification required|
+   199|
+   200|#### Request parameters
+   201|
+   202|```json
+   203|{
+   204|    "Message": "t.ckcloudai.com wants you to sign in with your Ethereum account:\n0x...",
+   205|    "Signature": "0x7d299b8c4a1f3e5d7c9b2a4f6e8d1c3b5a7f9e2d4c6b8a0f2e4d6c8b0a2f4e6d..."
+   206|}
+   207|```
+   208|
+   209||Parameter name|type|Required|illustrate|
+   210||-------|------|------|------|
+   211||`Message`|string|yes|Raw message obtained from `/message` interface|
+   212||`Signature`|string|yes|Wallet signature result, hexadecimal format|
+   213|
+   214|#### response parameters
+   215|
+   216|**Successful response (HTTP 200)**:
+   217|
+   218|```json
+   219|{
+   220|    "Pubkey": "0x774b3f6C5a6F8e2D9A1B3C4d5E6f7A8b9C0D1e2F"
+   221|}
+   222|```
+   223|
+   224||Parameter name|type|illustrate|
+   225||-------|------|------|
+   226||`Pubkey`|string|Verified wallet address|
+   227|
+   228|**Important**: response sets `Set-Cookie` header，subsequent requests must carry this Cookie：
+   229|
+   230|```
+   231|Set-Cookie: ckcloud=eyJhbG...VCJ9...; Path=/; HttpOnly; Secure
+   232|```
+   233|
+   234|**Error response**:
+   235|
+   236||HTTP status code|response body|illustrate|
+   237||------------|--------|------|
+   238||400|`{"error": "invalid request"}`|Invalid request parameter|
+   239||401|`{"error": "invalid signature"}`|Signature verification failed|
+   240||500|`{"error": "failed to create user"}`|Failed to create user|
+   241|
+   242|#### JavaScript call example
+   243|
+   244|```javascript
+   245|async function verifyAndLogin(message, signature) {
+   246|    const response = await fetch('https://t.ckcloudai.com/v1/login/siwe/verify', {
+   247|        method: 'POST',
+   248|        headers: {
+   249|            'Content-Type': 'application/json'
+   250|        },
+   251|        credentials: 'include',  // Important: Allow carrying and receiving cookies
+   252|        body: JSON.stringify({
+   253|            Message: message,
+   254|            Signature: signature
+   255|        })
+   256|    });
+   257|    
+   258|    const data = await response.json();
+   259|    
+   260|    if (!response.ok) {
+   261|        throw new Error(data.error || 'Verification failed');
+   262|    }
+   263|    
+   264|    return data.Pubkey;
+   265|}
+   266|```
+   267|
+   268|---
+   269|
+   270|### 3.3 Create API Key
+   271|
+   272|Create a new API Key for subsequent API call authentication.
+   273|
+   274|#### request information
+   275|
+   276||project|value|
+   277||-----|-----|
+   278|| **URL** | `/v1/api-key/create` |
+   279|| **Method** | `POST` |
+   280||**Certification**|Cookie JWT (requires SIWE login first)|
+   281|
+   282|#### Request parameters
+   283|
+   284|```json
+   285|{
+   286|    "Name": "my-api-key"
+   287|}
+   288|```
+   289|
+   290||Parameter name|type|Required|illustrate|
+   291||-------|------|------|------|
+   292||`Name`|string|yes|The name of the API Key for identification purposes|
+   293|
+   294|#### response parameters
+   295|
+   296|**Successful response (HTTP 200)**:
+   297|
+   298|```json
+   299|{
+   300|    "ApiKey": "***"
+   301|}
+   302|```
+   303|
+   304||Parameter name|type|illustrate|
+   305||-------|------|------|
+   306||`ApiKey`|string|The generated API Key starts with `sk-`, **Please keep it properly**|
+   307|
+   308|> ⚠️ **Important Note**: API Key only returns the complete value when created, and will be desensitized when querying the list later. Please save immediately after creation.
+   309|
+   310|**Error response**:
+   311|
+   312||HTTP status code|response body|illustrate|
+   313||------------|--------|------|
+   314||400|`{"error": "invalid request"}`|Invalid request parameter|
+   315||401|`{"error": "unauthorized"}`|Not logged in or cookie has expired|
+   316||500|`{"error": "failed to generate API key"}`|Build failed|
+   317||500|`{"error": "failed to save API key"}`|Save failed|
+   318|
+   319|#### JavaScript call example
+   320|
+   321|```javascript
+   322|async function createApiKey(name) {
+   323|    const response = await fetch('https://t.ckcloudai.com/v1/api-key/create', {
+   324|        method: 'POST',
+   325|        headers: {
+   326|            'Content-Type': 'application/json'
+   327|        },
+   328|        credentials: 'include',  // Carrying login cookies
+   329|        body: JSON.stringify({
+   330|            Name: name
+   331|        })
+   332|    });
+   333|    
+   334|    const data = await response.json();
+   335|    
+   336|    if (!response.ok) {
+   337|        throw new Error(data.error || 'Failed to create API key');
+   338|    }
+   339|    
+   340|    // ⚠️ Please save the API Key, the complete value cannot be viewed again later
+   341|    console.log('Your API Key:', data.ApiKey);
+   342|    return data.ApiKey;
+   343|}
+   344|```
+   345|
+   346|---
+   347|
+   348|### 3.4 Get API Key list
+   349|
+   350|Get the list of all API Keys of the current user in pages.
+   351|
+   352|#### request information
+   353|
+   354||project|value|
+   355||-----|-----|
+   356|| **URL** | `/v1/api-key/list` |
+   357|| **Method** | `GET` |
+   358||**Certification**|Cookie JWT (requires SIWE login first)|
+   359|
+   360|#### query parameters
+   361|
+   362||Parameter name|type|Required|default value|illustrate|
+   363||-------|------|------|--------|------|
+   364||`Page`|integer|no|1|Page number, starting from 1|
+   365||`Limit`|integer|no|20|Quantity per page|
+   366|
+   367|#### Request example
+   368|
+   369|```
+   370|GET /v1/api-key/list?Page=1&Limit=20
+   371|```
+   372|
+   373|#### response parameters
+   374|
+   375|**Successful response (HTTP 200)**:
+   376|
+   377|```json
+   378|{
+   379|    "Keys": [
+   380|        {
+   381|            "Id": 1165098538693787650,
+   382|            "Name": "production",
+   383|            "ApiKey": "***",
+   384|            "CreatedAt": 1775659056
+   385|        },
+   386|        {
+   387|            "Id": 1165098867007389698,
+   388|            "Name": "development",
+   389|            "ApiKey": "***",
+   390|            "CreatedAt": 1775659156
+   391|        }
+   392|    ],
+   393|    "Total": 2,
+   394|    "Limit": 20,
+   395|    "CurrentPage": 1,
+   396|    "TotalPages": 1
+   397|}
+   398|```
+   399|
+   400||Parameter name|type|illustrate|
+   401||-------|------|------|
+   402||`Keys`|array|API Key List|
+   403||`Keys[].Id`|integer|The unique identifier of the API Key, used for deletion operations|
+   404||`Keys[].Name`|string|API key name|
+   405||`Keys[].ApiKey`|string|**Desensitized** API Key (only the first 8 digits and the last 3 digits are displayed)|
+   406||`Keys[].CreatedAt`|integer|Creation time (Unix timestamp, seconds)|
+   407||`Total`|integer|Total number of records|
+   408||`Limit`|integer|Current page size|
+   409||`CurrentPage`|integer|Current page number|
+   410||`TotalPages`|integer|Total pages|
+   411|
+   412|**Error response**:
+   413|
+   414||HTTP status code|response body|illustrate|
+   415||------------|--------|------|
+   416||401|`{"error": "unauthorized"}`|Not logged in or cookie has expired|
+   417||500|`{"error": "failed to list API keys"}`|Query failed|
+   418|
+   419|#### JavaScript call example
+   420|
+   421|```javascript
+   422|async function listApiKeys(page = 1, limit = 20) {
+   423|    const response = await fetch(
+   424|        `https://t.ckcloudai.com/v1/api-key/list?Page=${page}&Limit=${limit}`,
+   425|        {
+   426|            method: 'GET',
+   427|            credentials: 'include'  // Carrying login cookies
+   428|        }
+   429|    );
+   430|    
+   431|    const data = await response.json();
+   432|    
+   433|    if (!response.ok) {
+   434|        throw new Error(data.error || 'Failed to list API keys');
+   435|    }
+   436|    
+   437|    return data;
+   438|}
+   439|
+   440|// Usage example
+   441|const result = await listApiKeys(1, 10);
+   442|console.log(`Total ${result.Total} API Keys`);
+   443|result.Keys.forEach(key => {
+   444|    console.log(`- [${key.Name}] ${key.ApiKey}`);
+   445|});
+   446|```
+   447|
+   448|---
+   449|
+   450|### 3.5 Delete API Key
+   451|
+   452|Delete the specified API Key.
+   453|
+   454|#### request information
+   455|
+   456||project|value|
+   457||-----|-----|
+   458|| **URL** | `/v1/api-key/delete` |
+   459|| **Method** | `POST` |
+   460||**Certification**|Cookie JWT (requires SIWE login first)|
+   461|
+   462|#### Request parameters
+   463|
+   464|```json
+   465|{
+   466|    "Id": 1165098538693787650
+   467|}
+   468|```
+   469|
+   470||Parameter name|type|Required|illustrate|
+   471||-------|------|------|------|
+   472||`Id`|integer|yes|API Key ID to be deleted (obtained from list interface)|
+   473|
+   474|#### response parameters
+   475|
+   476|**Successful response (HTTP 200)**:
+   477|
+   478|```json
+   479|{
+   480|    "Id": 1165098538693787650
+   481|}
+   482|```
+   483|
+   484||Parameter name|type|illustrate|
+   485||-------|------|------|
+   486||`Id`|integer|Deleted API Key ID|
+   487|
+   488|**Error response**:
+   489|
+   490||HTTP status code|response body|illustrate|
+   491||------------|--------|------|
+   492||400|`{"error": "invalid request"}`|Invalid request parameter|
+   493||401|`{"error": "unauthorized"}`|Not logged in or cookie has expired|
+   494||500|`{"error": "failed to delete API key"}`|Deletion failed (probably not authorized to delete)|
+   495|
+   496|#### JavaScript call example
+   497|
+   498|```javascript
+   499|async function deleteApiKey(id) {
+   500|    const response = await fetch('https://t.ckcloudai.com/v1/api-key/delete', {
+   501|
